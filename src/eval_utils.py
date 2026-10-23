@@ -7,6 +7,8 @@ Usage in a notebook:
     metrics_table(y_te, p_te)                       # p_te = {"EBM": proba, "XGBoost": proba, ...}
     plot_eval(y_te, p_te, colors=COLORS, pos_label="default")
     plot_eval(y_te, p_te, panels=["roc", "calibration"])   # only some plots
+    imp = permutation_importance_df(lambda X: ebm.predict_proba(X)[:, 1], X_te, y_te, sample=20000)
+    plot_importance(imp)
 
 Each plot also exists on its own (plot_roc, plot_pr, plot_ks, plot_calibration) and takes an `ax`,
 so you can put it into your own figure.
@@ -193,3 +195,70 @@ def plot_eval(y, preds, colors=None, panels=PANELS, ks_model=None, pos_label="po
         fig.suptitle(title, y=1.02)
     plt.tight_layout()
     plt.show()
+
+
+# ----------------------------------------------------------------------------
+# permutation importance
+# ----------------------------------------------------------------------------
+def permutation_importance_df(predict_fn, X, y, metric=roc_auc_score, n_repeats=5, sample=None,
+                              groups=None, random_state=42):
+    """Permutation importance for any model.
+
+    predict_fn: function X -> predicted probability of class 1,
+                e.g. lambda X: ebm.predict_proba(X)[:, 1]
+    metric:     score where higher = better (default AUC). Importance = score drop after shuffling.
+    sample:     use a random subset of rows to save time (None = all rows)
+    groups:     {group name: [columns]} -> columns in a group are shuffled together (same row order),
+                so the group gets one importance. Columns not in any group are shuffled alone.
+                Useful when features are correlated: shuffling one of them alone looks unimportant
+                because the others still carry the same information.
+    Returns a DataFrame sorted by importance (mean drop, std over repeats).
+    """
+    rng = np.random.default_rng(random_state)
+    y = np.asarray(y)
+    if sample is not None and sample < len(X):
+        idx = rng.choice(len(X), size=sample, replace=False)
+        X, y = X.iloc[idx], y[idx]
+    X = X.reset_index(drop=True)
+
+    units = {}
+    grouped = set()
+    for g, cols in (groups or {}).items():
+        units[g] = list(cols)
+        grouped.update(cols)
+    for c in X.columns:
+        if c not in grouped:
+            units[c] = [c]
+
+    base = metric(y, predict_fn(X))
+    rows = []
+    for name, cols in units.items():
+        drops = []
+        for _ in range(n_repeats):
+            perm = rng.permutation(len(X))
+            Xp = X.copy()
+            Xp[cols] = X[cols].to_numpy()[perm]
+            drops.append(base - metric(y, predict_fn(Xp)))
+        rows.append({"feature": name, "importance": np.mean(drops), "std": np.std(drops),
+                     "n_columns": len(cols)})
+    out = pd.DataFrame(rows).set_index("feature").sort_values("importance", ascending=False)
+    out.attrs["base_score"] = base
+    return out
+
+
+def plot_importance(imp, top_n=15, color="#2a78d6", title="Permutation importance", xlabel="Drop in AUC",
+                    ax=None):
+    """Horizontal bars with +-1 std error bars. imp = output of permutation_importance_df."""
+    top = imp.head(top_n).iloc[::-1]
+    show = ax is None
+    if ax is None:
+        _, ax = plt.subplots(figsize=(7, 0.35 * len(top) + 1.2))
+    labels = [f"{i} ({n})" if n > 1 else i for i, n in zip(top.index, top["n_columns"])]
+    ax.barh(labels, top["importance"], xerr=top["std"], color=color, height=0.65,
+            error_kw={"ecolor": GREY, "lw": 1})
+    ax.axvline(0, color=GREY, lw=1)
+    ax.set(title=title, xlabel=xlabel)
+    ax.grid(axis="y", visible=False)
+    if show:
+        plt.tight_layout()
+        plt.show()

@@ -3,7 +3,7 @@
 Usage in a notebook:
     from eda_utils import (check_duplicates, missing_table, missing_vs_target, psi, psi_table,
                            plot_boxplots, plot_numeric_by_target, plot_categorical_by_target,
-                           plot_target_rate_by_bin)
+                           plot_target_rate_by_bin, corr_matrix, high_corr_pairs, plot_corr_matrix)
 """
 import math
 
@@ -400,5 +400,77 @@ def plot_target_rate_by_bin(df, target, cols=None, ncols=5, bins=10, ci=True, lo
         ax.set_ylim(bottom=0)
         ax.set_ylabel(f"{target} rate (%)", fontsize=8)
     fig.suptitle(f"{target} rate by bin of each feature  (dashed = overall {overall:.1f}%, band = 95% CI)", y=1.0)
+    plt.tight_layout()
+    plt.show()
+
+
+# ----------------------------------------------------------------------------
+# correlation
+# ----------------------------------------------------------------------------
+def corr_matrix(df, cols=None, method="spearman"):
+    """Correlation matrix of numeric columns.
+
+    method: "spearman" (rank-based, default) is safer for skewed money columns and outliers;
+            "pearson" measures straight-line relation only.
+    Categorical columns are skipped.
+    """
+    cols = _numeric_cols(df, cols)
+    return df[cols].corr(method=method)
+
+
+def high_corr_pairs(df, cols=None, threshold=0.8, method="spearman"):
+    """Pairs of numeric columns with |correlation| >= threshold, strongest first.
+
+    Strongly correlated features carry similar information: their importance gets split,
+    and in linear models their coefficients become unstable. Consider grouping them or keeping one.
+    """
+    corr = corr_matrix(df, cols, method)
+    upper = corr.where(np.triu(np.ones(corr.shape, dtype=bool), k=1))   # each pair once
+    pairs = upper.stack().rename("corr").reset_index()
+    pairs.columns = ["feature_1", "feature_2", "corr"]
+    pairs["abs_corr"] = pairs["corr"].abs()
+    out = pairs[pairs["abs_corr"] >= threshold].sort_values("abs_corr", ascending=False)
+    if out.empty:
+        print(f"no pairs with |{method} corr| >= {threshold}")
+    return out.drop(columns="abs_corr").reset_index(drop=True)
+
+
+def plot_corr_matrix(df, cols=None, method="spearman", threshold=0.8, annot="auto", triangle=True,
+                     figsize=None, title=None):
+    """Heatmap of the correlation matrix (red = positive, blue = negative).
+
+    threshold: cells with |corr| >= threshold get a black frame, so the high pairs stand out.
+    annot:     write the numbers in the cells. "auto" = only when there are 20 columns or fewer.
+    triangle:  show only the lower triangle (the matrix is symmetric).
+    """
+    corr = corr_matrix(df, cols, method)
+    n = len(corr)
+    show_num = (n <= 20) if annot == "auto" else bool(annot)
+    data = corr.to_numpy().copy()
+    if triangle:
+        data[np.triu(np.ones((n, n), dtype=bool), k=1)] = np.nan
+
+    size = figsize or (max(6, 0.5 * n + 2), max(5, 0.45 * n + 1.5))
+    fig, ax = plt.subplots(figsize=size)
+    im = ax.imshow(data, cmap="RdBu_r", vmin=-1, vmax=1)
+    ax.set_xticks(range(n), corr.columns, rotation=90, fontsize=8)
+    ax.set_yticks(range(n), corr.columns, fontsize=8)
+    ax.grid(False)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    fig.colorbar(im, ax=ax, shrink=0.75, label=f"{method} correlation")
+
+    for i in range(n):
+        for j in range(n):
+            v = data[i, j]
+            if np.isnan(v) or i == j:
+                continue
+            if show_num:
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=6.5,
+                        color="white" if abs(v) >= 0.6 else "black")
+            if threshold is not None and abs(v) >= threshold:
+                ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False, edgecolor="black", lw=1.5))
+
+    ax.set_title(title or f"{method.capitalize()} correlation (framed: |corr| >= {threshold})")
     plt.tight_layout()
     plt.show()
