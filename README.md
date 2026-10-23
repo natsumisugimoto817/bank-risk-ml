@@ -10,4 +10,4 @@ Four connected projects on risk and financial crime, built with interpretability
 | 4 | Model monitoring | Drift detection with PSI and KL divergence | Planned |
 
 ## Background
-Based on my experience building a fraud risk model used by 1,000+ auditors at KPMG Japan.
+Based on my experience building a fraud risk model
